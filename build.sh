@@ -28,7 +28,7 @@ for TARGET in "${TARGETS[@]}"; do
   fi
   OUT="${BUILD_DIR}/${BINARY_NAME}-${GOOS}-${GOARCH}${EXT}"
   echo "  -> Compiling ${OUT} (${GOOS}/${GOARCH})..."
-  GOOS="${GOOS}" GOARCH="${GOARCH}" go build -ldflags="${LDFLAGS}" -o "${OUT}" .
+  GOOS="${GOOS}" GOARCH="${GOARCH}" go build -ldflags="${LDFLAGS}" -o "${OUT}" ./cmd/vpcdrain
 done
 
 echo "==> All binaries successfully compiled to ${BUILD_DIR}/"

@@ -1,0 +1,168 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "CallerVerification",
+      "Effect": "Allow",
+      "Action": [
+        "sts:GetCallerIdentity"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "DistributedDynamoDBLocking",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:PutItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:GetItem"
+      ],
+      "Resource": "arn:aws:dynamodb:*:*:table/vpcdrain-locks"
+    },
+    {
+      "Sid": "EC2DiscoveryReadOnly",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DescribeVpcs",
+        "ec2:DescribeSubnets",
+        "ec2:DescribeRouteTables",
+        "ec2:DescribeInternetGateways",
+        "ec2:DescribeNatGateways",
+        "ec2:DescribeAddresses",
+        "ec2:DescribeTransitGatewayVpcAttachments",
+        "ec2:DescribeVpcPeeringConnections",
+        "ec2:DescribeVpcEndpoints",
+        "ec2:DescribeSecurityGroups",
+        "ec2:DescribeNetworkInterfaces"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "EC2SecurityGroupCycleNeutralization",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:RevokeSecurityGroupIngress",
+        "ec2:RevokeSecurityGroupEgress",
+        "ec2:DeleteSecurityGroup"
+      ],
+      "Resource": "arn:aws:ec2:*:*:security-group/*"
+    },
+    {
+      "Sid": "EC2RouteTableAndSubnetTeardown",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DisassociateRouteTable",
+        "ec2:DeleteRouteTable"
+      ],
+      "Resource": "arn:aws:ec2:*:*:route-table/*"
+    },
+    {
+      "Sid": "EC2SubnetTeardown",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DeleteSubnet"
+      ],
+      "Resource": "arn:aws:ec2:*:*:subnet/*"
+    },
+    {
+      "Sid": "EC2InternetGatewayTeardown",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DetachInternetGateway",
+        "ec2:DeleteInternetGateway"
+      ],
+      "Resource": "arn:aws:ec2:*:*:internet-gateway/*"
+    },
+    {
+      "Sid": "EC2NatGatewayTeardown",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DeleteNatGateway"
+      ],
+      "Resource": "arn:aws:ec2:*:*:natgateway/*"
+    },
+    {
+      "Sid": "EC2ElasticIPRelease",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:ReleaseAddress"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "EC2TransitGatewayAttachmentDetachOnly",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DeleteTransitGatewayVpcAttachment"
+      ],
+      "Resource": "arn:aws:ec2:*:*:transit-gateway-attachment/*"
+    },
+    {
+      "Sid": "EC2VpcPeeringTeardown",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DeleteVpcPeeringConnection"
+      ],
+      "Resource": "arn:aws:ec2:*:*:vpc-peering-connection/*"
+    },
+    {
+      "Sid": "EC2VpcEndpointTeardown",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DeleteVpcEndpoints"
+      ],
+      "Resource": "arn:aws:ec2:*:*:vpc-endpoint/*"
+    },
+    {
+      "Sid": "EC2NetworkInterfaceCleanup",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DeleteNetworkInterface"
+      ],
+      "Resource": "arn:aws:ec2:*:*:network-interface/*"
+    },
+    {
+      "Sid": "EC2VpcTeardown",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DeleteVpc"
+      ],
+      "Resource": "arn:aws:ec2:*:*:vpc/*"
+    },
+    {
+      "Sid": "ELBv2Teardown",
+      "Effect": "Allow",
+      "Action": [
+        "elasticloadbalancing:DescribeLoadBalancers",
+        "elasticloadbalancing:DescribeTargetGroups",
+        "elasticloadbalancing:DeleteLoadBalancer",
+        "elasticloadbalancing:DeleteTargetGroup"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ECSTeardown",
+      "Effect": "Allow",
+      "Action": [
+        "ecs:ListClusters",
+        "ecs:ListServices",
+        "ecs:DescribeServices",
+        "ecs:UpdateService",
+        "ecs:ListTasks",
+        "ecs:DescribeTasks",
+        "ecs:StopTask"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "LambdaVpcDetachment",
+      "Effect": "Allow",
+      "Action": [
+        "lambda:ListFunctions",
+        "lambda:GetFunctionConfiguration",
+        "lambda:UpdateFunctionConfiguration"
+      ],
+      "Resource": "arn:aws:lambda:*:*:function:*"
+    }
+  ]
+}

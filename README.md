@@ -79,9 +79,59 @@ graph TD
 | `--tag` | `string` | *(required)* | Scope tag in `Key=Value` format (e.g., `PR=123` or `Ephemeral=true`) |
 | `--account-id` | `string` | `""` | Expected AWS Account ID to prevent cross-account blast radius |
 | `--region` | `string` | ambient | AWS region (defaults to ambient AWS config or `AWS_REGION`) |
+| `--lock-table` | `string` | `""` | DynamoDB table name for distributed mutex locking with TTL lease |
+| `--emit-summary` | `bool` | `false` | Append FinOps cost reduction breakdown to `$GITHUB_STEP_SUMMARY` |
 | `--dry-run` | `bool` | `true` | When `true`, inspects VPC, builds DAG, and outputs manifest without modifying AWS resources |
 | `--format` | `string` | `terminal` | Output format: `terminal` or `json` |
 | `--version` | `bool` | `false` | Print version and exit |
+
+---
+
+## Distributed DynamoDB Mutex Locking
+
+When `--lock-table <name>` is provided, `vpcdrain` acquires a distributed lease lock in DynamoDB before modifying infrastructure:
+- **Partition Key**: `LockID = <vpc-id>`
+- **Condition Expression**: `attribute_not_exists(LockID) OR ExpiresAt < :now`
+- **Lease Expiration**: Automatic TTL expiration preventing stalled locks if a runner crashes
+- **Safe Release**: Automatically releases the lock via `defer` upon completion or cancellation
+
+---
+
+## Two-Pass Security Group Cycle Stripper
+
+Resolves circular dependency deadlocks (SG-A allows SG-B and SG-B allows SG-A):
+1. **Pass 1 (Neutralize)**: Strips all ingress (`RevokeSecurityGroupIngress`) and egress (`RevokeSecurityGroupEgress`) rules from custom security groups to break all edges in the dependency graph.
+2. **Pass 2 (Eradicate)**: Concurrently calls `DeleteSecurityGroup` in parallel via `errgroup` with resilient exponential backoff and full jitter.
+
+---
+
+## Resilient DependencyViolation Polling
+
+Any transient `DependencyViolation`, `ResourceInUse`, or `InvalidGroup.InUse` errors (detected via `errors.As(err, &apiErr)` implementing `smithy.APIError`) trigger exponential backoff with full jitter:
+
+$$\text{sleep} = \text{random}(0, \min(\text{maxDelay}, \text{baseDelay} \times 2^{\text{attempt}}))$$
+
+Applied deterministically to subnets, security groups, route tables, internet gateways, and the target VPC.
+
+---
+
+## FinOps Cost Telemetry & GitHub Step Summary
+
+Tracks destroyed resources and computes monthly / annualized prevented cloud waste:
+- **NAT Gateways**: $32.85/month
+- **Elastic IPs (IPv4)**: $3.65/month ($0.005/hr)
+- **Application / Network Load Balancers**: $18.25/month
+- **Running Workloads (EC2 / Fargate)**: $40.00/month average
+- **VPC Interface Endpoints**: $7.30/month
+
+When running in GitHub Actions or with `--emit-summary`, a formatted Markdown summary table is appended to `$GITHUB_STEP_SUMMARY`.
+
+---
+
+## Production CI/CD Examples
+
+- [GitHub Actions PR Closed Teardown Workflow](examples/github-actions-teardown.yml): Demonstrates AWS OIDC credentials, PR tag discovery, DynamoDB locking, and FinOps summaries.
+- [Least-Privilege IAM Policy](examples/iam-least-privilege-policy.json): Resource-ARN scoped minimal IAM permissions.
 
 ---
 
@@ -97,43 +147,15 @@ vpcdrain --vpc-id vpc-0123456789abcdef0 --tag Ephemeral=true
 vpcdrain --vpc-id vpc-0123456789abcdef0 --tag PR=42 --account-id 123456789012 --format json
 ```
 
-Example JSON schema:
-```json
-{
-  "target": {
-    "accountId": "123456789012",
-    "region": "us-west-2",
-    "vpcId": "vpc-0123456789abcdef0",
-    "tags": {
-      "Ephemeral": "true",
-      "PR": "42"
-    }
-  },
-  "blastRadiusSummary": {
-    "totalResourcesToDelete": 17,
-    "totalRulesToStrip": 8,
-    "estimatedDurationSeconds": 145
-  },
-  "executionPlan": [
-    {
-      "tier": 1,
-      "name": "Compute (ECS Fargate & Lambda VPC Detachment)",
-      "resources": [
-        {
-          "resourceId": "arn:aws:ecs:us-west-2:123456789012:task/task-1",
-          "service": "ecs",
-          "action": "StopTask"
-        }
-      ]
-    },
-    ...
-  ]
-}
-```
-
-### Real Deterministic Teardown
+### Real Teardown with Distributed Lock & GitHub Summary
 ```bash
-vpcdrain --vpc-id vpc-0123456789abcdef0 --tag Ephemeral=true --account-id 123456789012 --dry-run=false
+vpcdrain \
+  --vpc-id vpc-0123456789abcdef0 \
+  --tag PR=42 \
+  --account-id 123456789012 \
+  --lock-table vpcdrain-locks \
+  --emit-summary \
+  --dry-run=false
 ```
 
 ---

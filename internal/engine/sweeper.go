@@ -417,10 +417,14 @@ func (s *Sweeper) ExecuteTier6SGsAndRouteTables(ctx context.Context, inv *VPCInv
 		// Disassociate non-main associations
 		for _, a := range rt.Associations {
 			if !a.Main && a.AssociationID != "" {
-				log.Info("Disassociating Route Table %s from association %s", rt.RouteTableID, a.AssociationID)
-				_, err := s.clients.EC2.DisassociateRouteTable(ctx, &ec2.DisassociateRouteTableInput{
-					AssociationId: aws.String(a.AssociationID),
-				})
+				assocID := a.AssociationID
+				log.Info("Disassociating Route Table %s from association %s", rt.RouteTableID, assocID)
+				err := RetryOnDependencyViolation(ctx, fmt.Sprintf("DisassociateRouteTable(%s)", assocID), s.opts.VpcTimeout, s.opts.RetryInterval, 5*time.Second, func() error {
+					_, err := s.clients.EC2.DisassociateRouteTable(ctx, &ec2.DisassociateRouteTableInput{
+						AssociationId: aws.String(assocID),
+					})
+					return err
+				}, log)
 				if err != nil && !isNotFoundError(err) {
 					log.Warn("Failed to disassociate route table %s: %v", rt.RouteTableID, err)
 				}
@@ -428,12 +432,16 @@ func (s *Sweeper) ExecuteTier6SGsAndRouteTables(ctx context.Context, inv *VPCInv
 		}
 
 		// Delete route table
-		log.Info("Deleting custom Route Table: %s", rt.RouteTableID)
-		_, err := s.clients.EC2.DeleteRouteTable(ctx, &ec2.DeleteRouteTableInput{
-			RouteTableId: aws.String(rt.RouteTableID),
-		})
+		rtID := rt.RouteTableID
+		log.Info("Deleting custom Route Table: %s", rtID)
+		err := RetryOnDependencyViolation(ctx, fmt.Sprintf("DeleteRouteTable(%s)", rtID), s.opts.VpcTimeout, s.opts.RetryInterval, 5*time.Second, func() error {
+			_, err := s.clients.EC2.DeleteRouteTable(ctx, &ec2.DeleteRouteTableInput{
+				RouteTableId: aws.String(rtID),
+			})
+			return err
+		}, log)
 		if err != nil && !isNotFoundError(err) {
-			log.Warn("Failed to delete Route Table %s: %v", rt.RouteTableID, err)
+			log.Warn("Failed to delete Route Table %s: %v", rtID, err)
 		}
 	}
 
@@ -447,21 +455,28 @@ func (s *Sweeper) ExecuteTier7GatewaysAndSubnets(ctx context.Context, inv *VPCIn
 
 	// 1. Detach and delete Internet Gateways
 	for _, igw := range inv.InternetGateways {
-		log.Info("Detaching Internet Gateway %s from VPC %s", igw, inv.VpcID)
-		_, err := s.clients.EC2.DetachInternetGateway(ctx, &ec2.DetachInternetGatewayInput{
-			InternetGatewayId: aws.String(igw),
-			VpcId:             aws.String(inv.VpcID),
-		})
+		igwID := igw
+		log.Info("Detaching Internet Gateway %s from VPC %s", igwID, inv.VpcID)
+		err := RetryOnDependencyViolation(ctx, fmt.Sprintf("DetachInternetGateway(%s)", igwID), s.opts.VpcTimeout, s.opts.RetryInterval, 5*time.Second, func() error {
+			_, err := s.clients.EC2.DetachInternetGateway(ctx, &ec2.DetachInternetGatewayInput{
+				InternetGatewayId: aws.String(igwID),
+				VpcId:             aws.String(inv.VpcID),
+			})
+			return err
+		}, log)
 		if err != nil && !isNotFoundError(err) {
-			log.Warn("Failed to detach IGW %s: %v", igw, err)
+			log.Warn("Failed to detach IGW %s: %v", igwID, err)
 		}
 
-		log.Info("Deleting Internet Gateway %s", igw)
-		_, err = s.clients.EC2.DeleteInternetGateway(ctx, &ec2.DeleteInternetGatewayInput{
-			InternetGatewayId: aws.String(igw),
-		})
+		log.Info("Deleting Internet Gateway %s", igwID)
+		err = RetryOnDependencyViolation(ctx, fmt.Sprintf("DeleteInternetGateway(%s)", igwID), s.opts.VpcTimeout, s.opts.RetryInterval, 5*time.Second, func() error {
+			_, err := s.clients.EC2.DeleteInternetGateway(ctx, &ec2.DeleteInternetGatewayInput{
+				InternetGatewayId: aws.String(igwID),
+			})
+			return err
+		}, log)
 		if err != nil && !isNotFoundError(err) {
-			log.Warn("Failed to delete IGW %s: %v", igw, err)
+			log.Warn("Failed to delete IGW %s: %v", igwID, err)
 		}
 	}
 
@@ -486,98 +501,45 @@ func (s *Sweeper) ExecuteTier8VPC(ctx context.Context, inv *VPCInventory) error 
 	log := s.opts.Logger
 	log.Tier(8, "VPC Deletion", "Calling ec2:DeleteVpc with backoff retries...")
 
-	interval := s.opts.RetryInterval
-	if interval <= 0 {
-		interval = 1 * time.Second
-	}
-	maxInterval := 10 * time.Second
-	deadline := time.Now().Add(s.opts.VpcTimeout)
-
-	for {
+	opName := fmt.Sprintf("DeleteVpc(%s)", inv.VpcID)
+	err := RetryOnDependencyViolation(ctx, opName, s.opts.VpcTimeout, s.opts.RetryInterval, 10*time.Second, func() error {
 		log.Info("Executing DeleteVpc for %s...", inv.VpcID)
 		_, err := s.clients.EC2.DeleteVpc(ctx, &ec2.DeleteVpcInput{
 			VpcId: aws.String(inv.VpcID),
 		})
-		if err == nil || isNotFoundError(err) {
-			log.Success("VPC %s successfully deleted from AWS", inv.VpcID)
-			return nil
-		}
+		return err
+	}, log)
 
-		if time.Now().After(deadline) {
-			return fmt.Errorf("timed out after %v waiting to delete VPC %s: %w", s.opts.VpcTimeout, inv.VpcID, err)
-		}
-
-		log.Debug("DeleteVpc failed with %v; retrying in %v...", err, interval)
-
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(interval):
-		}
-
-		interval = time.Duration(float64(interval) * 1.5)
-		if interval > maxInterval {
-			interval = maxInterval
-		}
+	if err != nil {
+		return fmt.Errorf("failed to delete VPC %s: %w", inv.VpcID, err)
 	}
+
+	log.Success("VPC %s successfully deleted from AWS", inv.VpcID)
+	return nil
 }
 
 func (s *Sweeper) deleteSGWithRetry(ctx context.Context, sgID string, sgName string) error {
 	log := s.opts.Logger
-	interval := s.opts.RetryInterval
-	if interval <= 0 {
-		interval = 500 * time.Millisecond
-	}
-	deadline := time.Now().Add(30 * time.Second)
-
-	for {
+	opName := fmt.Sprintf("DeleteSecurityGroup(%s: %s)", sgID, sgName)
+	return RetryOnDependencyViolation(ctx, opName, 45*time.Second, s.opts.RetryInterval, 5*time.Second, func() error {
 		log.Info("Deleting custom Security Group %s (%s)...", sgID, sgName)
 		_, err := s.clients.EC2.DeleteSecurityGroup(ctx, &ec2.DeleteSecurityGroupInput{
 			GroupId: aws.String(sgID),
 		})
-		if err == nil || isNotFoundError(err) {
-			return nil
-		}
-
-		if time.Now().After(deadline) {
-			return fmt.Errorf("timed out attempting to delete SG %s (%s): %w", sgID, sgName, err)
-		}
-
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(interval):
-		}
-	}
+		return err
+	}, log)
 }
 
 func (s *Sweeper) deleteSubnetWithRetry(ctx context.Context, subID string) error {
 	log := s.opts.Logger
-	interval := s.opts.RetryInterval
-	if interval <= 0 {
-		interval = 500 * time.Millisecond
-	}
-	deadline := time.Now().Add(45 * time.Second)
-
-	for {
+	opName := fmt.Sprintf("DeleteSubnet(%s)", subID)
+	return RetryOnDependencyViolation(ctx, opName, 60*time.Second, s.opts.RetryInterval, 5*time.Second, func() error {
 		log.Info("Deleting Subnet %s...", subID)
 		_, err := s.clients.EC2.DeleteSubnet(ctx, &ec2.DeleteSubnetInput{
 			SubnetId: aws.String(subID),
 		})
-		if err == nil || isNotFoundError(err) {
-			return nil
-		}
-
-		if time.Now().After(deadline) {
-			return fmt.Errorf("timed out attempting to delete Subnet %s: %w", subID, err)
-		}
-
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(interval):
-		}
-	}
+		return err
+	}, log)
 }
 
 func isNotFoundError(err error) bool {

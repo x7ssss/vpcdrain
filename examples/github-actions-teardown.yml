@@ -1,0 +1,70 @@
+name: Ephemeral VPC Teardown
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+jobs:
+  teardown:
+    name: Teardown Ephemeral VPC
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::123456789012:role/github-actions-vpcdrain
+          aws-region: us-west-2
+          role-session-name: vpcdrain-pr-${{ github.event.pull_request.number }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          check-latest: true
+
+      - name: Compile vpcdrain Static Binary
+        run: |
+          CGO_ENABLED=0 go build -ldflags="-s -w" -o bin/vpcdrain ./cmd/vpcdrain
+
+      - name: Discover Target VPC
+        id: vpc
+        run: |
+          PR_TAG="PR=${{ github.event.pull_request.number }}"
+          echo "Querying for VPC with tag ${PR_TAG}..."
+          
+          VPC_ID=$(aws ec2 describe-vpcs \
+            --filters "Name=tag:PR,Values=${{ github.event.pull_request.number }}" \
+            --query "Vpcs[0].VpcId" \
+            --output text)
+
+          if [ "$VPC_ID" == "None" ] || [ -z "$VPC_ID" ]; then
+            echo "No active ephemeral VPC found for PR ${{ github.event.pull_request.number }}. Skipping teardown."
+            echo "found=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "Target VPC identified: $VPC_ID"
+          echo "found=true" >> $GITHUB_OUTPUT
+          echo "vpc_id=$VPC_ID" >> $GITHUB_OUTPUT
+
+      - name: Execute Deterministic VPC Teardown
+        if: steps.vpc.outputs.found == 'true'
+        run: |
+          ./bin/vpcdrain \
+            --vpc-id "${{ steps.vpc.outputs.vpc_id }}" \
+            --tag "PR=${{ github.event.pull_request.number }}" \
+            --account-id "123456789012" \
+            --region "us-west-2" \
+            --lock-table "vpcdrain-locks" \
+            --emit-summary \
+            --dry-run=false

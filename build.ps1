@@ -27,7 +27,7 @@ foreach ($target in $targets) {
     Write-Host "  -> Compiling $out ($($target.OS)/$($target.Arch))..." -ForegroundColor Yellow
     $env:GOOS = $target.OS
     $env:GOARCH = $target.Arch
-    go build -ldflags $LdFlags -o $out .
+    go build -ldflags $LdFlags -o $out ./cmd/vpcdrain
 }
 
 Write-Host "==> All binaries successfully compiled to $BuildDir/!" -ForegroundColor Green
