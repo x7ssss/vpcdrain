@@ -1,28 +1,28 @@
-# vpcdrain
+# ⚡ vpcdrain
 
 > Deterministic, zero-dependency, single-binary Go CLI that tears down ephemeral AWS VPCs across 8 reverse-topological tiers, eliminates circular security group deadlocks, and cleanly polls requester-managed ENIs.
 
 [![Go Version](https://img.shields.io/badge/go-1.22%2B-00ADD8?style=flat-square&logo=go)](https://golang.org)
 [![AWS SDK](https://img.shields.io/badge/AWS%20SDK%20v2-Go-FF9900?style=flat-square&logo=amazon-aws)](https://github.com/aws/aws-sdk-go-v2)
 [![Release](https://img.shields.io/github/v/release/x7ssss/vpcdrain?style=flat-square&color=34D058)](https://github.com/x7ssss/vpcdrain/releases)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](https://opensource.org/licenses/MIT)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 [![CI/CD](https://img.shields.io/badge/ci%2Fcd-github%20actions-2088FF?style=flat-square&logo=githubactions)](https://github.com/x7ssss/vpcdrain/actions)
 
 ---
 
 ## ⚡ Quickstart
 
-### Dry-Run Inspection (Terminal Formatted Plan)
+### 🔍 Dry-Run Inspection (Terminal Formatted Plan)
 ```bash
 vpcdrain --vpc-id vpc-0123456789abcdef0 --tag Ephemeral=true
 ```
 
-### Dry-Run JSON Manifest Output
+### 📋 Dry-Run JSON Manifest Output
 ```bash
 vpcdrain --vpc-id vpc-0123456789abcdef0 --tag PR=42 --account-id 123456789012 --format json
 ```
 
-### Real Teardown with Distributed DynamoDB Locking
+### 🚀 Real Teardown with Distributed DynamoDB Locking
 ```bash
 vpcdrain \
   --vpc-id vpc-0123456789abcdef0 \
@@ -37,7 +37,7 @@ vpcdrain \
 
 ## 📦 Installation & Binary Downloads
 
-### Pre-Built Binaries via curl (GitHub Releases)
+### 🚀 Pre-Built Binaries via curl (GitHub Releases)
 
 Download the latest static binary for your operating system and architecture directly:
 
@@ -55,17 +55,17 @@ curl -sSL -o /usr/local/bin/vpcdrain https://github.com/x7ssss/vpcdrain/releases
 curl -sSL -o /usr/local/bin/vpcdrain https://github.com/x7ssss/vpcdrain/releases/latest/download/vpcdrain_darwin_amd64 && chmod +x /usr/local/bin/vpcdrain
 ```
 
-### Windows (PowerShell)
+### 🪟 Windows (PowerShell)
 ```powershell
 Invoke-WebRequest -Uri "https://github.com/x7ssss/vpcdrain/releases/latest/download/vpcdrain_windows_amd64.exe" -OutFile "$Env:USERPROFILE\bin\vpcdrain.exe"
 ```
 
-### Install with Go
+### 🔧 Install with Go
 ```bash
 go install github.com/x7ssss/vpcdrain/cmd/vpcdrain@latest
 ```
 
-### Build from Source
+### 🛠️ Build from Source
 ```bash
 git clone https://github.com/x7ssss/vpcdrain.git
 cd vpcdrain
@@ -98,142 +98,95 @@ graph TD
 | **4** | **Elastic IPs** | NAT Gateway Allocated and Orphaned EIPs | Poll `DescribeNatGateways` until status reaches `deleted`, then invoke `ReleaseAddress` |
 | **5** | **SG Cycle Stripping** | All Security Groups in target VPC | Revoke all `IpPermissions` (ingress) and `IpPermissionsEgress` (egress) rules to break circular dependency locks |
 | **Barrier** | **ENI Drain** | Requester-managed ENIs (Lambda, ECS, ELB) | Poll `DescribeNetworkInterfaces` with exponential backoff and full jitter until 0 active interfaces remain |
-| **6** | **SGs & Route Tables** | Custom Security Groups and Custom Route Tables | Concurrently delete custom SGs via `errgroup` (skip default SG). Disassociate and delete custom route tables (skip main RT) |
-| **7** | **Gateways & Subnets** | Internet Gateways and Subnets | Detach and delete Internet Gateways. Concurrently delete all subnets via `errgroup` |
-| **8** | **VPC Deletion** | Target VPC | Execute `DeleteVpc` with resilient backoff retries until completion |
+| **6** | **SGs & Route Tables** | Custom Security Groups, Custom Route Tables | Delete custom SGs in parallel, disassociate and delete non-main route tables |
+| **7** | **Gateways & Subnets** | Internet Gateways, Subnets | Detach IGW from VPC, call `DeleteInternetGateway`, delete all subnets concurrently |
+| **8** | **VPC** | Target VPC (`vpc-xxxxxxxx`) | Call `DeleteVpc` with backoff retries |
 
 ---
 
 ## 🔒 Distributed DynamoDB Locking (Surviving CI SIGKILLs)
 
-When running multiple teardown jobs concurrently in CI/CD, race conditions and duplicate teardowns can corrupt AWS state. When `--lock-table <name>` is provided, `vpcdrain` uses DynamoDB for atomic distributed mutex locking:
+When CI/CD pipelines get aborted or reach hard timeouts (SIGKILL), orphaned teardown processes can leave cloud environments in broken, half-deleted states.
 
-- **Partition Key**: `LockID = <vpc-id>`
-- **Condition Expression**:
-  ```
-  attribute_not_exists(LockID) OR ExpiresAt < :now
-  ```
-- **Surviving Runner SIGKILL**: Each lock carries an atomic TTL lease (default: 50 minutes). If a GitHub Actions runner gets cancelled, killed, or runs out of memory, the lease automatically expires, preventing orphaned locks.
-- **Deterministic Cleanup**: `defer locker.ReleaseLock()` ensures the lock is immediately released on normal exit, SIGINT, or SIGTERM.
+`vpcdrain` implements a robust distributed lock via Amazon DynamoDB:
+- 🔒 **Atomic Acquisition**: Uses conditional write expressions (`attribute_not_exists(LockID) OR expires_at < :now`).
+- ⏱️ **Automatic TTL Expiration**: Sets a configurable TTL (default 15 minutes). Dead runners never permanently block subsequent runs.
+- 💓 **Heartbeat Renewal**: Background goroutine continuously extends the lock lease every 30 seconds while teardown proceeds.
+- 🛡️ **Graceful Release**: Cleanly deletes the lock record upon successful completion or graceful shutdown (SIGINT/SIGTERM).
 
 ---
 
 ## 🔄 Two-Pass Circular Security Group Neutralization
 
-AWS security groups frequently cross-reference each other (SG-A allows ingress from SG-B, while SG-B allows ingress from SG-A). AWS rejects deletion attempts on either group with `DependencyViolation`.
+AWS Security Groups frequently reference each other circularly (SG-A allows ingress from SG-B; SG-B allows ingress from SG-A). Calling `ec2:DeleteSecurityGroup` immediately fails with `DependencyViolation`.
 
-`vpcdrain` solves this via a two-pass algorithm (`internal/engine/security_groups.go`):
-
-1. **Pass 1 (Neutralize)**: Queries all custom security groups in the VPC (skipping `default`). Revokes every ingress and egress rule, stripping all edges from the dependency graph.
-2. **Pass 2 (Eradicate)**: Concurrently invokes `DeleteSecurityGroup` across all custom SGs using `errgroup` with resilient exponential backoff and full jitter.
+`vpcdrain` solves this deterministically in two phases:
+1. ✂️ **Pass 1 (Strip Rules)**: Concurrently enumerates all non-default security groups and revokes all ingress (`RevokeSecurityGroupIngress`) and egress (`RevokeSecurityGroupEgress`) rules. This breaks all circular reference edges in the graph.
+2. 🗑️ **Pass 2 (Parallel Deletion)**: Concurrently deletes the bare, unlinked security groups with automatic retry backoff.
 
 ---
 
 ## 🛡️ Safety Guardrails
 
-`vpcdrain` enforces strict safety invariants before inspecting or touching any AWS resources:
-
-1. **Caller Verification**: Calls `sts:GetCallerIdentity`. If the caller account does not match `--account-id`, execution aborts immediately to prevent cross-account blast radius.
-2. **Hard Denylist**: Inspects VPC tags. If `Environment` (or `Env`) matches `production`, `prod`, `staging`, `shared`, or `core` (case-insensitive), or if the `DoNotDelete` tag is present, execution aborts immediately.
-3. **Scope Tag Exact Match**: Ensures the VPC has the exact tag provided via `--tag Key=Value` (e.g., `PR=123`).
-4. **Shared Transit Gateway Protection**: `vpcdrain` never calls `DeleteTransitGateway`. Only VPC attachments specific to this VPC are detached via `DeleteTransitGatewayVpcAttachment`.
+- 🛡️ **Scope Tagging**: Requires `--tag Key=Value` to ensure only explicitly designated ephemeral environments are targeted.
+- 🔍 **Account ID Verification**: Optional `--account-id` validates the target AWS account before any mutating API calls are dispatched, preventing multi-account execution errors.
+- ⚡ **Protected VPC Shield**: Refuses to delete VPCs marked with protected tags (`Production=true`, `DoNotDelete=true`, or `Protected=true`).
+- 📋 **Dry-Run by Default**: Defaults to `--dry-run=true`. Never modifies AWS resources unless `--dry-run=false` is explicitly passed.
 
 ---
 
 ## 💰 FinOps Telemetry & GitHub Step Summaries
 
-Tracks destroyed resources and computes monthly and annualized prevented cloud waste:
+When running in CI/CD, pass `--emit-summary` to generate actionable FinOps cost reduction summaries directly into `$GITHUB_STEP_SUMMARY`:
 
-| Billable Resource Category | Monthly Unit Rate | Basis |
-| :------------------------- | :---------------: | :---- |
-| **NAT Gateways** | $32.85 / month | $0.045 / hour |
-| **Elastic IPs (IPv4)** | $3.65 / month | $0.005 / hour IPv4 charge |
-| **Application / Network Load Balancers** | $18.25 / month | $0.025 / hour |
-| **Running Workloads (EC2 / Fargate)** | $40.00 / month | Baseline compute workload |
-| **VPC Interface Endpoints** | $7.30 / month | $0.010 / hour |
-
-When running in GitHub Actions (or with `--emit-summary`), a formatted Markdown summary table is appended to `$GITHUB_STEP_SUMMARY`:
-
-```markdown
-## 💸 FinOps VPC Teardown Summary
-
-> **Target VPC:** `vpc-0123456789abcdef0` | **Region:** `us-west-2` | **Account:** `123456789012`
-
-| Billable Resource Category | Destroyed | Unit Monthly Rate | Monthly Savings | Annualized Savings |
-| :------------------------- | :-------: | :---------------: | :-------------: | :----------------: |
-| **NAT Gateways** | 2 | $32.85 | **$65.70** | $788.40 |
-| **Elastic IPs (IPv4)** | 2 | $3.65 | **$7.30** | $87.60 |
-| **Application / Network Load Balancers** | 1 | $18.25 | **$18.25** | $219.00 |
-| **VPC Interface Endpoints** | 2 | $7.30 | **$14.60** | $175.20 |
-| **Total Prevented Cloud Waste** | | | **$105.85 / mo** | **$1270.20 / yr** |
-
-💰 **Total Monthly Savings:** **$105.85** ($1270.20 annualized)
+```bash
+vpcdrain --vpc-id vpc-0123456789abcdef0 --dry-run=false --emit-summary
 ```
+
+### 💸 FinOps VPC Teardown Summary
+| Resource Type | Count Deleted | Monthly Savings (Est.) |
+|:---|:---:|:---|
+| NAT Gateways | 2 | ~$65.70 / mo |
+| Elastic IPs (Idle) | 2 | ~$7.30 / mo |
+| Application Load Balancers | 1 | ~$22.50 / mo |
+| VPC Endpoints (Interface) | 3 | ~$21.90 / mo |
+| **Total Estimated Run-Rate Savings** | | **~$117.40 / mo** |
 
 ---
 
 ## 🚀 CI/CD Integration (GitHub Actions OIDC)
 
-Add automated teardown to your repository upon PR close (`.github/workflows/teardown.yml`):
-
 ```yaml
 name: Ephemeral VPC Teardown
-
 on:
   pull_request:
     types: [closed]
 
-permissions:
-  id-token: write
-  contents: read
-
 jobs:
-  teardown:
-    name: Teardown Ephemeral VPC
+  cleanup:
     runs-on: ubuntu-latest
-    timeout-minutes: 50
-
+    permissions:
+      id-token: write
+      contents: read
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Configure AWS Credentials via OIDC
+      - name: Configure AWS Credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::123456789012:role/github-actions-vpcdrain
-          aws-region: us-west-2
-          role-session-name: vpcdrain-pr-${{ github.event.pull_request.number }}
+          aws-region: us-east-1
 
-      - name: Download vpcdrain
+      - name: Install vpcdrain
         run: |
           curl -sSL -o /usr/local/bin/vpcdrain https://github.com/x7ssss/vpcdrain/releases/latest/download/vpcdrain_linux_amd64
           chmod +x /usr/local/bin/vpcdrain
 
-      - name: Discover Target VPC
-        id: vpc
-        run: |
-          VPC_ID=$(aws ec2 describe-vpcs \
-            --filters "Name=tag:PR,Values=${{ github.event.pull_request.number }}" \
-            --query "Vpcs[0].VpcId" \
-            --output text)
-
-          if [ "$VPC_ID" == "None" ] || [ -z "$VPC_ID" ]; then
-            echo "found=false" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-
-          echo "found=true" >> $GITHUB_OUTPUT
-          echo "vpc_id=$VPC_ID" >> $GITHUB_OUTPUT
-
-      - name: Execute Deterministic Teardown
-        if: steps.vpc.outputs.found == 'true'
+      - name: Tear Down VPC
         run: |
           vpcdrain \
-            --vpc-id "${{ steps.vpc.outputs.vpc_id }}" \
-            --tag "PR=${{ github.event.pull_request.number }}" \
-            --account-id "123456789012" \
-            --region "us-west-2" \
-            --lock-table "vpcdrain-locks" \
+            --vpc-id ${{ steps.lookup.outputs.vpc_id }} \
+            --tag PR=${{ github.event.pull_request.number }} \
+            --account-id 123456789012 \
+            --lock-table vpcdrain-locks \
             --emit-summary \
             --dry-run=false
 ```
@@ -276,4 +229,6 @@ go tool cover -html=coverage.out -o coverage.html
 
 ## 📄 License
 
-MIT License. See [LICENSE](LICENSE) for details.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+Copyright (c) 2026 x7ssss
