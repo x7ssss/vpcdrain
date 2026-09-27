@@ -1,0 +1,87 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Binary
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            binary_name: vpcdrain_linux_amd64
+          - goos: linux
+            goarch: arm64
+            binary_name: vpcdrain_linux_arm64
+          - goos: darwin
+            goarch: amd64
+            binary_name: vpcdrain_darwin_amd64
+          - goos: darwin
+            goarch: arm64
+            binary_name: vpcdrain_darwin_arm64
+          - goos: windows
+            goarch: amd64
+            binary_name: vpcdrain_windows_amd64.exe
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          check-latest: true
+
+      - name: Compile Static Binary
+        env:
+          CGO_ENABLED: 0
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          mkdir -p bin
+          VERSION="${GITHUB_REF_NAME#v}"
+          go build -ldflags="-s -w -X github.com/x7ssss/vpcdrain/internal/cli.Version=${VERSION}" -o "bin/${{ matrix.binary_name }}" ./cmd/vpcdrain
+
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.binary_name }}
+          path: bin/${{ matrix.binary_name }}
+          retention-days: 1
+
+  publish:
+    name: Publish Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Download All Build Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Prepare Release Assets & Checksums
+        run: |
+          mkdir -p release-assets
+          find dist -type f -exec mv -t release-assets/ {} +
+          cd release-assets
+          sha256sum * > checksums.txt
+          cat checksums.txt
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release-assets/*
+          generate_release_notes: true
